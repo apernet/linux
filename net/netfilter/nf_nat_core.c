@@ -344,9 +344,11 @@ find_best_ips_proto(const struct nf_conntrack_zone *zone,
 	 * client coming from the same IP (some Internet Banking sites
 	 * like this), even across reboots.
 	 */
-	j = jhash2((u32 *)&tuple->src.u3, sizeof(tuple->src.u3) / sizeof(u32),
-		   range->flags & NF_NAT_RANGE_PERSISTENT ?
-			0 : (__force u32)tuple->dst.u3.all[max] ^ zone->id);
+	// j = jhash2((u32 *)&tuple->src.u3, sizeof(tuple->src.u3) / sizeof(u32),
+	//	   range->flags & NF_NAT_RANGE_PERSISTENT ?
+	//		0 : (__force u32)tuple->dst.u3.all[max] ^ zone->id);
+	
+	j = get_random_u32();
 
 	full_range = false;
 	for (i = 0; i <= max; i++) {
@@ -368,7 +370,7 @@ find_best_ips_proto(const struct nf_conntrack_zone *zone,
 			full_range = true;
 
 		if (!(range->flags & NF_NAT_RANGE_PERSISTENT))
-			j ^= (__force u32)tuple->dst.u3.all[i];
+			j = get_random_u32();
 	}
 }
 
