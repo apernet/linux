@@ -6946,6 +6946,7 @@ static int set_user_ringbuf_callback_state(struct bpf_verifier_env *env,
 	__mark_reg_not_init(env, &callee->regs[BPF_REG_5]);
 
 	callee->in_callback_fn = true;
+	callee->callback_ret_range = tnum_range(0, 1);
 	return 0;
 }
 
@@ -13350,7 +13351,7 @@ static int opt_subreg_zext_lo32_rnd_hi32(struct bpf_verifier_env *env,
 			    aux[adj_idx].ptr_type == PTR_TO_CTX)
 				continue;
 
-			imm_rnd = get_random_int();
+			imm_rnd = get_random_u32();
 			rnd_hi32_patch[0] = insn;
 			rnd_hi32_patch[1].imm = imm_rnd;
 			rnd_hi32_patch[3].dst_reg = load_reg;
