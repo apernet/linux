@@ -1625,6 +1625,7 @@ static const struct mtk_eint_hw mt8188_eint_hw = {
 	.ports     = 7,
 	.ap_num    = 225,
 	.db_cnt    = 32,
+	.db_time   = debounce_time_mt6765,
 };
 
 static const struct mtk_pin_soc mt8188_data = {
@@ -1669,5 +1670,4 @@ static int __init mt8188_pinctrl_init(void)
 
 arch_initcall(mt8188_pinctrl_init);
 
-MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("MediaTek MT8188 Pinctrl Driver");

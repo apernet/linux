@@ -401,7 +401,7 @@ dasd_ioctl_copy_pair_swap(struct block_device *bdev, void __user *argp)
 		return -EFAULT;
 	}
 	if (memchr_inv(data.reserved, 0, sizeof(data.reserved))) {
-		pr_warn("%s: Ivalid swap data specified.\n",
+		pr_warn("%s: Invalid swap data specified\n",
 			dev_name(&device->cdev->dev));
 		dasd_put_device(device);
 		return DASD_COPYPAIRSWAP_INVALID;
@@ -552,10 +552,10 @@ static int __dasd_ioctl_information(struct dasd_block *block,
 
 	memcpy(dasd_info->type, base->discipline->name, 4);
 
-	spin_lock_irqsave(&block->queue_lock, flags);
+	spin_lock_irqsave(get_ccwdev_lock(base->cdev), flags);
 	list_for_each(l, &base->ccw_queue)
 		dasd_info->chanq_len++;
-	spin_unlock_irqrestore(&block->queue_lock, flags);
+	spin_unlock_irqrestore(get_ccwdev_lock(base->cdev), flags);
 	return 0;
 }
 
