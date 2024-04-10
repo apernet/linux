@@ -1015,7 +1015,8 @@ void intel_gt_set_wedged(struct intel_gt *gt)
 	mutex_lock(&gt->reset.mutex);
 
 	if (GEM_SHOW_DEBUG()) {
-		struct drm_printer p = drm_debug_printer(__func__);
+		struct drm_printer p = drm_dbg_printer(&gt->i915->drm,
+						       DRM_UT_DRIVER, __func__);
 		struct intel_engine_cs *engine;
 		enum intel_engine_id id;
 
@@ -1293,7 +1294,7 @@ int __intel_engine_reset_bh(struct intel_engine_cs *engine, const char *msg)
 	if (msg)
 		drm_notice(&engine->i915->drm,
 			   "Resetting %s for %s\n", engine->name, msg);
-	atomic_inc(&engine->i915->gpu_error.reset_engine_count[engine->uabi_class]);
+	i915_increase_reset_engine_count(&engine->i915->gpu_error, engine);
 
 	ret = intel_gt_reset_engine(engine);
 	if (ret) {

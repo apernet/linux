@@ -70,6 +70,20 @@ struct r535_gsp_msg {
 
 #define GSP_MSG_HDR_SIZE offsetof(struct r535_gsp_msg, data)
 
+static int
+r535_rpc_status_to_errno(uint32_t rpc_status)
+{
+	switch (rpc_status) {
+	case 0x55: /* NV_ERR_NOT_READY */
+	case 0x66: /* NV_ERR_TIMEOUT_RETRY */
+		return -EAGAIN;
+	case 0x51: /* NV_ERR_NO_MEMORY */
+		return -ENOMEM;
+	default:
+		return -EINVAL;
+	}
+}
+
 static void *
 r535_gsp_msgq_wait(struct nvkm_gsp *gsp, u32 repc, u32 *prepc, int *ptime)
 {
@@ -298,7 +312,8 @@ retry:
 		struct nvkm_gsp_msgq_ntfy *ntfy = &gsp->msgq.ntfy[i];
 
 		if (ntfy->fn == msg->function) {
-			ntfy->func(ntfy->priv, ntfy->fn, msg->data, msg->length - sizeof(*msg));
+			if (ntfy->func)
+				ntfy->func(ntfy->priv, ntfy->fn, msg->data, msg->length - sizeof(*msg));
 			break;
 		}
 	}
@@ -583,14 +598,14 @@ r535_gsp_rpc_rm_alloc_push(struct nvkm_gsp_object *object, void *argv, u32 repc)
 		return rpc;
 
 	if (rpc->status) {
-		nvkm_error(&gsp->subdev, "RM_ALLOC: 0x%x\n", rpc->status);
-		ret = ERR_PTR(-EINVAL);
+		ret = ERR_PTR(r535_rpc_status_to_errno(rpc->status));
+		if (PTR_ERR(ret) != -EAGAIN)
+			nvkm_error(&gsp->subdev, "RM_ALLOC: 0x%x\n", rpc->status);
 	} else {
 		ret = repc ? rpc->params : NULL;
 	}
 
-	if (IS_ERR_OR_NULL(ret))
-		nvkm_gsp_rpc_done(gsp, rpc);
+	nvkm_gsp_rpc_done(gsp, rpc);
 
 	return ret;
 }
@@ -623,29 +638,34 @@ r535_gsp_rpc_rm_ctrl_done(struct nvkm_gsp_object *object, void *repv)
 {
 	rpc_gsp_rm_control_v03_00 *rpc = container_of(repv, typeof(*rpc), params);
 
+	if (!repv)
+		return;
 	nvkm_gsp_rpc_done(object->client->gsp, rpc);
 }
 
-static void *
-r535_gsp_rpc_rm_ctrl_push(struct nvkm_gsp_object *object, void *argv, u32 repc)
+static int
+r535_gsp_rpc_rm_ctrl_push(struct nvkm_gsp_object *object, void **argv, u32 repc)
 {
-	rpc_gsp_rm_control_v03_00 *rpc = container_of(argv, typeof(*rpc), params);
+	rpc_gsp_rm_control_v03_00 *rpc = container_of((*argv), typeof(*rpc), params);
 	struct nvkm_gsp *gsp = object->client->gsp;
-	void *ret;
+	int ret = 0;
 
 	rpc = nvkm_gsp_rpc_push(gsp, rpc, true, repc);
-	if (IS_ERR_OR_NULL(rpc))
-		return rpc;
-
-	if (rpc->status) {
-		nvkm_error(&gsp->subdev, "cli:0x%08x obj:0x%08x ctrl cmd:0x%08x failed: 0x%08x\n",
-			   object->client->object.handle, object->handle, rpc->cmd, rpc->status);
-		ret = ERR_PTR(-EINVAL);
-	} else {
-		ret = repc ? rpc->params : NULL;
+	if (IS_ERR_OR_NULL(rpc)) {
+		*argv = NULL;
+		return PTR_ERR(rpc);
 	}
 
-	if (IS_ERR_OR_NULL(ret))
+	if (rpc->status) {
+		ret = r535_rpc_status_to_errno(rpc->status);
+		if (ret != -EAGAIN)
+			nvkm_error(&gsp->subdev, "cli:0x%08x obj:0x%08x ctrl cmd:0x%08x failed: 0x%08x\n",
+				   object->client->object.handle, object->handle, rpc->cmd, rpc->status);
+	}
+
+	if (repc)
+		*argv = rpc->params;
+	else
 		nvkm_gsp_rpc_done(gsp, rpc);
 
 	return ret;
@@ -843,9 +863,11 @@ r535_gsp_intr_get_table(struct nvkm_gsp *gsp)
 	if (IS_ERR(ctrl))
 		return PTR_ERR(ctrl);
 
-	ctrl = nvkm_gsp_rm_ctrl_push(&gsp->internal.device.subdevice, ctrl, sizeof(*ctrl));
-	if (WARN_ON(IS_ERR(ctrl)))
-		return PTR_ERR(ctrl);
+	ret = nvkm_gsp_rm_ctrl_push(&gsp->internal.device.subdevice, &ctrl, sizeof(*ctrl));
+	if (WARN_ON(ret)) {
+		nvkm_gsp_rm_ctrl_done(&gsp->internal.device.subdevice, ctrl);
+		return ret;
+	}
 
 	for (unsigned i = 0; i < ctrl->tableLen; i++) {
 		enum nvkm_subdev_type type;
@@ -975,6 +997,32 @@ r535_gsp_rpc_get_gsp_static_info(struct nvkm_gsp *gsp)
 	return 0;
 }
 
+static void
+nvkm_gsp_mem_dtor(struct nvkm_gsp *gsp, struct nvkm_gsp_mem *mem)
+{
+	if (mem->data) {
+		/*
+		 * Poison the buffer to catch any unexpected access from
+		 * GSP-RM if the buffer was prematurely freed.
+		 */
+		memset(mem->data, 0xFF, mem->size);
+
+		dma_free_coherent(gsp->subdev.device->dev, mem->size, mem->data, mem->addr);
+		memset(mem, 0, sizeof(*mem));
+	}
+}
+
+static int
+nvkm_gsp_mem_ctor(struct nvkm_gsp *gsp, size_t size, struct nvkm_gsp_mem *mem)
+{
+	mem->size = size;
+	mem->data = dma_alloc_coherent(gsp->subdev.device->dev, size, &mem->addr, GFP_KERNEL);
+	if (WARN_ON(!mem->data))
+		return -ENOMEM;
+
+	return 0;
+}
+
 static int
 r535_gsp_postinit(struct nvkm_gsp *gsp)
 {
@@ -1002,6 +1050,11 @@ r535_gsp_postinit(struct nvkm_gsp *gsp)
 
 	nvkm_inth_allow(&gsp->subdev.inth);
 	nvkm_wr32(device, 0x110004, 0x00000040);
+
+	/* Release the DMA buffers that were needed only for boot and init */
+	nvkm_gsp_mem_dtor(gsp, &gsp->boot.fw);
+	nvkm_gsp_mem_dtor(gsp, &gsp->libos);
+
 	return ret;
 }
 
@@ -1056,7 +1109,6 @@ r535_gsp_rpc_set_registry(struct nvkm_gsp *gsp)
 	if (IS_ERR(rpc))
 		return PTR_ERR(rpc);
 
-	rpc->size = sizeof(*rpc);
 	rpc->numEntries = NV_GSP_REG_NUM_ENTRIES;
 
 	str_offset = offsetof(typeof(*rpc), entries[NV_GSP_REG_NUM_ENTRIES]);
@@ -1072,6 +1124,7 @@ r535_gsp_rpc_set_registry(struct nvkm_gsp *gsp)
 		strings += name_len;
 		str_offset += name_len;
 	}
+	rpc->size = str_offset;
 
 	return nvkm_gsp_rpc_wr(gsp, rpc, false);
 }
@@ -1099,16 +1152,12 @@ r535_gsp_acpi_caps(acpi_handle handle, CAPS_METHOD_DATA *caps)
 	if (!obj)
 		return;
 
-	printk(KERN_ERR "nvop: obj type %d\n", obj->type);
-	printk(KERN_ERR "nvop: obj len %d\n", obj->buffer.length);
-
 	if (WARN_ON(obj->type != ACPI_TYPE_BUFFER) ||
 	    WARN_ON(obj->buffer.length != 4))
 		return;
 
 	caps->status = 0;
 	caps->optimusCaps = *(u32 *)obj->buffer.pointer;
-	printk(KERN_ERR "nvop: caps %08x\n", caps->optimusCaps);
 
 	ACPI_FREE(obj);
 
@@ -1135,9 +1184,6 @@ r535_gsp_acpi_jt(acpi_handle handle, JT_METHOD_DATA *jt)
 	if (!obj)
 		return;
 
-	printk(KERN_ERR "jt: obj type %d\n", obj->type);
-	printk(KERN_ERR "jt: obj len %d\n", obj->buffer.length);
-
 	if (WARN_ON(obj->type != ACPI_TYPE_BUFFER) ||
 	    WARN_ON(obj->buffer.length != 4))
 		return;
@@ -1146,7 +1192,6 @@ r535_gsp_acpi_jt(acpi_handle handle, JT_METHOD_DATA *jt)
 	jt->jtCaps = *(u32 *)obj->buffer.pointer;
 	jt->jtRevId = (jt->jtCaps & 0xfff00000) >> 20;
 	jt->bSBIOSCaps = 0;
-	printk(KERN_ERR "jt: caps %08x rev:%04x\n", jt->jtCaps, jt->jtRevId);
 
 	ACPI_FREE(obj);
 
@@ -1157,6 +1202,8 @@ static void
 r535_gsp_acpi_mux_id(acpi_handle handle, u32 id, MUX_METHOD_DATA_ELEMENT *mode,
 						 MUX_METHOD_DATA_ELEMENT *part)
 {
+	union acpi_object mux_arg = { ACPI_TYPE_INTEGER };
+	struct acpi_object_list input = { 1, &mux_arg };
 	acpi_handle iter = NULL, handle_mux = NULL;
 	acpi_status status;
 	unsigned long long value;
@@ -1179,14 +1226,18 @@ r535_gsp_acpi_mux_id(acpi_handle handle, u32 id, MUX_METHOD_DATA_ELEMENT *mode,
 	if (!handle_mux)
 		return;
 
-	status = acpi_evaluate_integer(handle_mux, "MXDM", NULL, &value);
+	/* I -think- 0 means "acquire" according to nvidia's driver source */
+	input.pointer->integer.type = ACPI_TYPE_INTEGER;
+	input.pointer->integer.value = 0;
+
+	status = acpi_evaluate_integer(handle_mux, "MXDM", &input, &value);
 	if (ACPI_SUCCESS(status)) {
 		mode->acpiId = id;
 		mode->mode   = value;
 		mode->status = 0;
 	}
 
-	status = acpi_evaluate_integer(handle_mux, "MXDS", NULL, &value);
+	status = acpi_evaluate_integer(handle_mux, "MXDS", &input, &value);
 	if (ACPI_SUCCESS(status)) {
 		part->acpiId = id;
 		part->mode   = value;
@@ -1232,8 +1283,8 @@ r535_gsp_acpi_dod(acpi_handle handle, DOD_METHOD_DATA *dod)
 		dod->acpiIdListLen += sizeof(dod->acpiIdList[0]);
 	}
 
-	printk(KERN_ERR "_DOD: ok! len:%d\n", dod->acpiIdListLen);
 	dod->status = 0;
+	kfree(output.pointer);
 }
 #endif
 
@@ -1377,6 +1428,17 @@ r535_gsp_msg_post_event(void *priv, u32 fn, void *repv, u32 repc)
 	return 0;
 }
 
+/**
+ * r535_gsp_msg_run_cpu_sequencer() -- process I/O commands from the GSP
+ * @priv: gsp pointer
+ * @fn: function number (ignored)
+ * @repv: pointer to libos print RPC
+ * @repc: message size
+ *
+ * The GSP sequencer is a list of I/O commands that the GSP can send to
+ * the driver to perform for various purposes.  The most common usage is to
+ * perform a special mid-initialization reset.
+ */
 static int
 r535_gsp_msg_run_cpu_sequencer(void *priv, u32 fn, void *repv, u32 repc)
 {
@@ -1504,27 +1566,6 @@ r535_gsp_msg_run_cpu_sequencer(void *priv, u32 fn, void *repv, u32 repc)
 
 	return 0;
 }
-
-static void
-nvkm_gsp_mem_dtor(struct nvkm_gsp *gsp, struct nvkm_gsp_mem *mem)
-{
-	if (mem->data) {
-		dma_free_coherent(gsp->subdev.device->dev, mem->size, mem->data, mem->addr);
-		mem->data = NULL;
-	}
-}
-
-static int
-nvkm_gsp_mem_ctor(struct nvkm_gsp *gsp, u32 size, struct nvkm_gsp_mem *mem)
-{
-	mem->size = size;
-	mem->data = dma_alloc_coherent(gsp->subdev.device->dev, size, &mem->addr, GFP_KERNEL);
-	if (WARN_ON(!mem->data))
-		return -ENOMEM;
-
-	return 0;
-}
-
 
 static int
 r535_gsp_booter_unload(struct nvkm_gsp *gsp, u32 mbox0, u32 mbox1)
@@ -1716,6 +1757,23 @@ r535_gsp_libos_id8(const char *name)
 	return id;
 }
 
+/**
+ * create_pte_array() - creates a PTE array of a physically contiguous buffer
+ * @ptes: pointer to the array
+ * @addr: base address of physically contiguous buffer (GSP_PAGE_SIZE aligned)
+ * @size: size of the buffer
+ *
+ * GSP-RM sometimes expects physically-contiguous buffers to have an array of
+ * "PTEs" for each page in that buffer.  Although in theory that allows for
+ * the buffer to be physically discontiguous, GSP-RM does not currently
+ * support that.
+ *
+ * In this case, the PTEs are DMA addresses of each page of the buffer.  Since
+ * the buffer is physically contiguous, calculating all the PTEs is simple
+ * math.
+ *
+ * See memdescGetPhysAddrsForGpu()
+ */
 static void create_pte_array(u64 *ptes, dma_addr_t addr, size_t size)
 {
 	unsigned int num_pages = DIV_ROUND_UP_ULL(size, GSP_PAGE_SIZE);
@@ -1725,6 +1783,36 @@ static void create_pte_array(u64 *ptes, dma_addr_t addr, size_t size)
 		ptes[i] = (u64)addr + (i << GSP_PAGE_SHIFT);
 }
 
+/**
+ * r535_gsp_libos_init() -- create the libos arguments structure
+ * @gsp: gsp pointer
+ *
+ * The logging buffers are byte queues that contain encoded printf-like
+ * messages from GSP-RM.  They need to be decoded by a special application
+ * that can parse the buffers.
+ *
+ * The 'loginit' buffer contains logs from early GSP-RM init and
+ * exception dumps.  The 'logrm' buffer contains the subsequent logs. Both are
+ * written to directly by GSP-RM and can be any multiple of GSP_PAGE_SIZE.
+ *
+ * The physical address map for the log buffer is stored in the buffer
+ * itself, starting with offset 1. Offset 0 contains the "put" pointer.
+ *
+ * The GSP only understands 4K pages (GSP_PAGE_SIZE), so even if the kernel is
+ * configured for a larger page size (e.g. 64K pages), we need to give
+ * the GSP an array of 4K pages. Fortunately, since the buffer is
+ * physically contiguous, it's simple math to calculate the addresses.
+ *
+ * The buffers must be a multiple of GSP_PAGE_SIZE.  GSP-RM also currently
+ * ignores the @kind field for LOGINIT, LOGINTR, and LOGRM, but expects the
+ * buffers to be physically contiguous anyway.
+ *
+ * The memory allocated for the arguments must remain until the GSP sends the
+ * init_done RPC.
+ *
+ * See _kgspInitLibosLoggingStructures (allocates memory for buffers)
+ * See kgspSetupLibosInitArgs_IMPL (creates pLibosInitArgs[] array)
+ */
 static int
 r535_gsp_libos_init(struct nvkm_gsp *gsp)
 {
@@ -1835,21 +1923,54 @@ nvkm_gsp_radix3_dtor(struct nvkm_gsp *gsp, struct nvkm_gsp_radix3 *rx3)
 		nvkm_gsp_mem_dtor(gsp, &rx3->mem[i]);
 }
 
+/**
+ * nvkm_gsp_radix3_sg - build a radix3 table from a S/G list
+ * @gsp: gsp pointer
+ * @sgt: S/G list to traverse
+ * @size: size of the image, in bytes
+ * @rx3: radix3 array to update
+ *
+ * The GSP uses a three-level page table, called radix3, to map the firmware.
+ * Each 64-bit "pointer" in the table is either the bus address of an entry in
+ * the next table (for levels 0 and 1) or the bus address of the next page in
+ * the GSP firmware image itself.
+ *
+ * Level 0 contains a single entry in one page that points to the first page
+ * of level 1.
+ *
+ * Level 1, since it's also only one page in size, contains up to 512 entries,
+ * one for each page in Level 2.
+ *
+ * Level 2 can be up to 512 pages in size, and each of those entries points to
+ * the next page of the firmware image.  Since there can be up to 512*512
+ * pages, that limits the size of the firmware to 512*512*GSP_PAGE_SIZE = 1GB.
+ *
+ * Internally, the GSP has its window into system memory, but the base
+ * physical address of the aperture is not 0.  In fact, it varies depending on
+ * the GPU architecture.  Since the GPU is a PCI device, this window is
+ * accessed via DMA and is therefore bound by IOMMU translation.  The end
+ * result is that GSP-RM must translate the bus addresses in the table to GSP
+ * physical addresses.  All this should happen transparently.
+ *
+ * Returns 0 on success, or negative error code
+ *
+ * See kgspCreateRadix3_IMPL
+ */
 static int
-nvkm_gsp_radix3_sg(struct nvkm_device *device, struct sg_table *sgt, u64 size,
+nvkm_gsp_radix3_sg(struct nvkm_gsp *gsp, struct sg_table *sgt, u64 size,
 		   struct nvkm_gsp_radix3 *rx3)
 {
 	u64 addr;
 
 	for (int i = ARRAY_SIZE(rx3->mem) - 1; i >= 0; i--) {
 		u64 *ptes;
-		int idx;
+		size_t bufsize;
+		int ret, idx;
 
-		rx3->mem[i].size = ALIGN((size / GSP_PAGE_SIZE) * sizeof(u64), GSP_PAGE_SIZE);
-		rx3->mem[i].data = dma_alloc_coherent(device->dev, rx3->mem[i].size,
-						      &rx3->mem[i].addr, GFP_KERNEL);
-		if (WARN_ON(!rx3->mem[i].data))
-			return -ENOMEM;
+		bufsize = ALIGN((size / GSP_PAGE_SIZE) * sizeof(u64), GSP_PAGE_SIZE);
+		ret = nvkm_gsp_mem_ctor(gsp, bufsize, &rx3->mem[i]);
+		if (ret)
+			return ret;
 
 		ptes = rx3->mem[i].data;
 		if (i == 2) {
@@ -1889,7 +2010,7 @@ r535_gsp_fini(struct nvkm_gsp *gsp, bool suspend)
 		if (ret)
 			return ret;
 
-		ret = nvkm_gsp_radix3_sg(gsp->subdev.device, &gsp->sr.sgt, len, &gsp->sr.radix3);
+		ret = nvkm_gsp_radix3_sg(gsp, &gsp->sr.sgt, len, &gsp->sr.radix3);
 		if (ret)
 			return ret;
 
@@ -2048,6 +2169,13 @@ r535_gsp_dtor(struct nvkm_gsp *gsp)
 	mutex_destroy(&gsp->cmdq.mutex);
 
 	r535_gsp_dtor_fws(gsp);
+
+	nvkm_gsp_mem_dtor(gsp, &gsp->rmargs);
+	nvkm_gsp_mem_dtor(gsp, &gsp->wpr_meta);
+	nvkm_gsp_mem_dtor(gsp, &gsp->shm.mem);
+	nvkm_gsp_mem_dtor(gsp, &gsp->loginit);
+	nvkm_gsp_mem_dtor(gsp, &gsp->logintr);
+	nvkm_gsp_mem_dtor(gsp, &gsp->logrm);
 }
 
 int
@@ -2092,7 +2220,7 @@ r535_gsp_oneinit(struct nvkm_gsp *gsp)
 	memcpy(gsp->sig.data, data, size);
 
 	/* Build radix3 page table for ELF image. */
-	ret = nvkm_gsp_radix3_sg(device, &gsp->fw.mem.sgt, gsp->fw.len, &gsp->radix3);
+	ret = nvkm_gsp_radix3_sg(gsp, &gsp->fw.mem.sgt, gsp->fw.len, &gsp->radix3);
 	if (ret)
 		return ret;
 
@@ -2104,7 +2232,9 @@ r535_gsp_oneinit(struct nvkm_gsp *gsp)
 	r535_gsp_msg_ntfy_add(gsp, NV_VGPU_MSG_EVENT_MMU_FAULT_QUEUED,
 			      r535_gsp_msg_mmu_fault_queued, gsp);
 	r535_gsp_msg_ntfy_add(gsp, NV_VGPU_MSG_EVENT_OS_ERROR_LOG, r535_gsp_msg_os_error_log, gsp);
-
+	r535_gsp_msg_ntfy_add(gsp, NV_VGPU_MSG_EVENT_PERF_BRIDGELESS_INFO_UPDATE, NULL, NULL);
+	r535_gsp_msg_ntfy_add(gsp, NV_VGPU_MSG_EVENT_UCODE_LIBOS_PRINT, NULL, NULL);
+	r535_gsp_msg_ntfy_add(gsp, NV_VGPU_MSG_EVENT_GSP_SEND_USER_SHARED_DATA, NULL, NULL);
 	ret = r535_gsp_rm_boot_ctor(gsp);
 	if (ret)
 		return ret;
@@ -2191,8 +2321,12 @@ r535_gsp_load(struct nvkm_gsp *gsp, int ver, const struct nvkm_gsp_fwif *fwif)
 {
 	struct nvkm_subdev *subdev = &gsp->subdev;
 	int ret;
+	bool enable_gsp = fwif->enable;
 
-	if (!nvkm_boolopt(subdev->device->cfgopt, "NvGspRm", fwif->enable))
+#if IS_ENABLED(CONFIG_DRM_NOUVEAU_GSP_DEFAULT)
+	enable_gsp = true;
+#endif
+	if (!nvkm_boolopt(subdev->device->cfgopt, "NvGspRm", enable_gsp))
 		return -EINVAL;
 
 	if ((ret = r535_gsp_load_fw(gsp, "gsp", fwif->ver, &gsp->fws.rm)) ||

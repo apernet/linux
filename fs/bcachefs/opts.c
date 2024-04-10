@@ -7,6 +7,7 @@
 #include "disk_groups.h"
 #include "error.h"
 #include "opts.h"
+#include "recovery_passes.h"
 #include "super-io.h"
 #include "util.h"
 
@@ -52,7 +53,7 @@ const char * const bch2_csum_opts[] = {
 	NULL
 };
 
-const char * const bch2_compression_types[] = {
+const char * const __bch2_compression_types[] = {
 	BCH_COMPRESSION_TYPES()
 	NULL
 };
@@ -72,7 +73,7 @@ const char * const bch2_str_hash_opts[] = {
 	NULL
 };
 
-const char * const bch2_data_types[] = {
+const char * const __bch2_data_types[] = {
 	BCH_DATA_TYPES()
 	NULL
 };
@@ -205,6 +206,9 @@ const struct bch_option bch2_opt_table[] = {
 #define OPT_STR(_choices)	.type = BCH_OPT_STR,			\
 				.min = 0, .max = ARRAY_SIZE(_choices),	\
 				.choices = _choices
+#define OPT_STR_NOLIMIT(_choices)	.type = BCH_OPT_STR,		\
+				.min = 0, .max = U64_MAX,		\
+				.choices = _choices
 #define OPT_FN(_fn)		.type = BCH_OPT_FN, .fn	= _fn
 
 #define x(_name, _bits, _flags, _type, _sb_opt, _default, _hint, _help)	\
@@ -279,14 +283,14 @@ int bch2_opt_validate(const struct bch_option *opt, u64 v, struct printbuf *err)
 		if (err)
 			prt_printf(err, "%s: not a multiple of 512",
 			       opt->attr.name);
-		return -EINVAL;
+		return -BCH_ERR_opt_parse_error;
 	}
 
 	if ((opt->flags & OPT_MUST_BE_POW_2) && !is_power_of_2(v)) {
 		if (err)
 			prt_printf(err, "%s: must be a power of two",
 			       opt->attr.name);
-		return -EINVAL;
+		return -BCH_ERR_opt_parse_error;
 	}
 
 	if (opt->fn.validate)
@@ -314,7 +318,7 @@ int bch2_opt_parse(struct bch_fs *c,
 		if (ret < 0 || (*res != 0 && *res != 1)) {
 			if (err)
 				prt_printf(err, "%s: must be bool", opt->attr.name);
-			return ret;
+			return ret < 0 ? ret : -BCH_ERR_option_not_bool;
 		}
 		break;
 	case BCH_OPT_UINT:
@@ -456,7 +460,7 @@ int bch2_parse_mount_opts(struct bch_fs *c, struct bch_opts *opts,
 
 	copied_opts = kstrdup(options, GFP_KERNEL);
 	if (!copied_opts)
-		return -1;
+		return -ENOMEM;
 	copied_opts_start = copied_opts;
 
 	while ((opt = strsep(&copied_opts, ",")) != NULL) {
@@ -501,11 +505,11 @@ int bch2_parse_mount_opts(struct bch_fs *c, struct bch_opts *opts,
 
 bad_opt:
 	pr_err("Bad mount option %s", name);
-	ret = -1;
+	ret = -BCH_ERR_option_name;
 	goto out;
 bad_val:
 	pr_err("Invalid mount option %s", err.buf);
-	ret = -1;
+	ret = -BCH_ERR_option_value;
 	goto out;
 out:
 	kfree(copied_opts_start);

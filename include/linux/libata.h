@@ -107,6 +107,7 @@ enum {
 
 	ATA_DFLAG_NCQ_PRIO_ENABLED = (1 << 20), /* Priority cmds sent to dev */
 	ATA_DFLAG_CDL_ENABLED	= (1 << 21), /* cmd duration limits is enabled */
+	ATA_DFLAG_RESUMING	= (1 << 22),  /* Device is resuming */
 	ATA_DFLAG_DETACH	= (1 << 24),
 	ATA_DFLAG_DETACHED	= (1 << 25),
 	ATA_DFLAG_DA		= (1 << 26), /* device supports Device Attention */
@@ -471,7 +472,7 @@ enum ata_completion_errors {
 
 /*
  * Link power management policy: If you alter this, you also need to
- * alter libata-scsi.c (for the ascii descriptions)
+ * alter libata-sata.c (for the ascii descriptions)
  */
 enum ata_lpm_policy {
 	ATA_LPM_UNKNOWN,

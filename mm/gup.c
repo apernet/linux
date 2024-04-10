@@ -177,7 +177,7 @@ struct folio *try_grab_folio(struct page *page, int refs, unsigned int flags)
 	/*
 	 * Adjust the pincount before re-checking the PTE for changes.
 	 * This is essentially a smp_mb() and is paired with a memory
-	 * barrier in page_try_share_anon_rmap().
+	 * barrier in folio_try_share_anon_rmap_*().
 	 */
 	smp_mb__after_atomic();
 
@@ -710,6 +710,7 @@ static struct page *follow_pmd_mask(struct vm_area_struct *vma,
 		spin_unlock(ptl);
 		if (page)
 			return page;
+		return no_page_table(vma, flags);
 	}
 	if (likely(!pmd_trans_huge(pmdval)))
 		return follow_page_pte(vma, address, pmd, flags, &ctx->pgmap);
@@ -758,6 +759,7 @@ static struct page *follow_pud_mask(struct vm_area_struct *vma,
 		spin_unlock(ptl);
 		if (page)
 			return page;
+		return no_page_table(vma, flags);
 	}
 	if (unlikely(pud_bad(*pud)))
 		return no_page_table(vma, flags);
@@ -1651,20 +1653,22 @@ long populate_vma_page_range(struct vm_area_struct *vma,
 	if (vma->vm_flags & VM_LOCKONFAULT)
 		return nr_pages;
 
+	/* ... similarly, we've never faulted in PROT_NONE pages */
+	if (!vma_is_accessible(vma))
+		return -EFAULT;
+
 	gup_flags = FOLL_TOUCH;
 	/*
 	 * We want to touch writable mappings with a write fault in order
 	 * to break COW, except for shared mappings because these don't COW
 	 * and we would not want to dirty them for nothing.
+	 *
+	 * Otherwise, do a read fault, and use FOLL_FORCE in case it's not
+	 * readable (ie write-only or executable).
 	 */
 	if ((vma->vm_flags & (VM_WRITE | VM_SHARED)) == VM_WRITE)
 		gup_flags |= FOLL_WRITE;
-
-	/*
-	 * We want mlock to succeed for regions that have any permissions
-	 * other than PROT_NONE.
-	 */
-	if (vma_is_accessible(vma))
+	else
 		gup_flags |= FOLL_FORCE;
 
 	if (locked)

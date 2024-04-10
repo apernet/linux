@@ -493,7 +493,7 @@ static void vduse_vq_kick(struct vduse_virtqueue *vq)
 		goto unlock;
 
 	if (vq->kickfd)
-		eventfd_signal(vq->kickfd, 1);
+		eventfd_signal(vq->kickfd);
 	else
 		vq->kicked = true;
 unlock:
@@ -539,6 +539,17 @@ static void vduse_vdpa_set_vq_num(struct vdpa_device *vdpa, u16 idx, u32 num)
 	struct vduse_virtqueue *vq = dev->vqs[idx];
 
 	vq->num = num;
+}
+
+static u16 vduse_vdpa_get_vq_size(struct vdpa_device *vdpa, u16 idx)
+{
+	struct vduse_dev *dev = vdpa_to_vduse(vdpa);
+	struct vduse_virtqueue *vq = dev->vqs[idx];
+
+	if (vq->num)
+		return vq->num;
+	else
+		return vq->num_max;
 }
 
 static void vduse_vdpa_set_vq_ready(struct vdpa_device *vdpa,
@@ -773,6 +784,7 @@ static const struct vdpa_config_ops vduse_vdpa_config_ops = {
 	.kick_vq		= vduse_vdpa_kick_vq,
 	.set_vq_cb		= vduse_vdpa_set_vq_cb,
 	.set_vq_num             = vduse_vdpa_set_vq_num,
+	.get_vq_size		= vduse_vdpa_get_vq_size,
 	.set_vq_ready		= vduse_vdpa_set_vq_ready,
 	.get_vq_ready		= vduse_vdpa_get_vq_ready,
 	.set_vq_state		= vduse_vdpa_set_vq_state,
@@ -797,6 +809,26 @@ static const struct vdpa_config_ops vduse_vdpa_config_ops = {
 	.set_map		= vduse_vdpa_set_map,
 	.free			= vduse_vdpa_free,
 };
+
+static void vduse_dev_sync_single_for_device(struct device *dev,
+					     dma_addr_t dma_addr, size_t size,
+					     enum dma_data_direction dir)
+{
+	struct vduse_dev *vdev = dev_to_vduse(dev);
+	struct vduse_iova_domain *domain = vdev->domain;
+
+	vduse_domain_sync_single_for_device(domain, dma_addr, size, dir);
+}
+
+static void vduse_dev_sync_single_for_cpu(struct device *dev,
+					     dma_addr_t dma_addr, size_t size,
+					     enum dma_data_direction dir)
+{
+	struct vduse_dev *vdev = dev_to_vduse(dev);
+	struct vduse_iova_domain *domain = vdev->domain;
+
+	vduse_domain_sync_single_for_cpu(domain, dma_addr, size, dir);
+}
 
 static dma_addr_t vduse_dev_map_page(struct device *dev, struct page *page,
 				     unsigned long offset, size_t size,
@@ -858,6 +890,8 @@ static size_t vduse_dev_max_mapping_size(struct device *dev)
 }
 
 static const struct dma_map_ops vduse_dev_dma_ops = {
+	.sync_single_for_device = vduse_dev_sync_single_for_device,
+	.sync_single_for_cpu = vduse_dev_sync_single_for_cpu,
 	.map_page = vduse_dev_map_page,
 	.unmap_page = vduse_dev_unmap_page,
 	.alloc = vduse_dev_alloc_coherent,
@@ -911,7 +945,7 @@ static int vduse_kickfd_setup(struct vduse_dev *dev,
 		eventfd_ctx_put(vq->kickfd);
 	vq->kickfd = ctx;
 	if (vq->ready && vq->kicked && vq->kickfd) {
-		eventfd_signal(vq->kickfd, 1);
+		eventfd_signal(vq->kickfd);
 		vq->kicked = false;
 	}
 	spin_unlock(&vq->kick_lock);
@@ -960,7 +994,7 @@ static bool vduse_vq_signal_irqfd(struct vduse_virtqueue *vq)
 
 	spin_lock_irq(&vq->irq_lock);
 	if (vq->ready && vq->cb.trigger) {
-		eventfd_signal(vq->cb.trigger, 1);
+		eventfd_signal(vq->cb.trigger);
 		signal = true;
 	}
 	spin_unlock_irq(&vq->irq_lock);
@@ -1157,7 +1191,7 @@ static long vduse_dev_ioctl(struct file *file, unsigned int cmd,
 			fput(f);
 			break;
 		}
-		ret = receive_fd(f, perm_to_file_flags(entry.perm));
+		ret = receive_fd(f, NULL, perm_to_file_flags(entry.perm));
 		fput(f);
 		break;
 	}

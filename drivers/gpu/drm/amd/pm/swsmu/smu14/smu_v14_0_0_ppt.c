@@ -70,9 +70,12 @@ static struct cmn2asic_msg_mapping smu_v14_0_0_message_map[SMU_MSG_MAX_COUNT] = 
 	MSG_MAP(TestMessage,                    PPSMC_MSG_TestMessage,				1),
 	MSG_MAP(GetSmuVersion,                  PPSMC_MSG_GetPmfwVersion,			1),
 	MSG_MAP(GetDriverIfVersion,             PPSMC_MSG_GetDriverIfVersion,		1),
-	MSG_MAP(PowerDownVcn,                   PPSMC_MSG_PowerDownVcn,				1),
-	MSG_MAP(PowerUpVcn,                     PPSMC_MSG_PowerUpVcn,				1),
-	MSG_MAP(SetHardMinVcn,                  PPSMC_MSG_SetHardMinVcn,			1),
+	MSG_MAP(PowerDownVcn0,                  PPSMC_MSG_PowerDownVcn0,			1),
+	MSG_MAP(PowerUpVcn0,                    PPSMC_MSG_PowerUpVcn0,				1),
+	MSG_MAP(SetHardMinVcn0,                 PPSMC_MSG_SetHardMinVcn0,			1),
+	MSG_MAP(PowerDownVcn1,                  PPSMC_MSG_PowerDownVcn1,			1),
+	MSG_MAP(PowerUpVcn1,                    PPSMC_MSG_PowerUpVcn1,				1),
+	MSG_MAP(SetHardMinVcn1,                 PPSMC_MSG_SetHardMinVcn1,			1),
 	MSG_MAP(SetSoftMinGfxclk,               PPSMC_MSG_SetSoftMinGfxclk,			1),
 	MSG_MAP(PrepareMp1ForUnload,            PPSMC_MSG_PrepareMp1ForUnload,		1),
 	MSG_MAP(SetDriverDramAddrHigh,          PPSMC_MSG_SetDriverDramAddrHigh,	1),
@@ -83,7 +86,8 @@ static struct cmn2asic_msg_mapping smu_v14_0_0_message_map[SMU_MSG_MAX_COUNT] = 
 	MSG_MAP(GetEnabledSmuFeatures,          PPSMC_MSG_GetEnabledSmuFeatures,	1),
 	MSG_MAP(SetHardMinSocclkByFreq,         PPSMC_MSG_SetHardMinSocclkByFreq,	1),
 	MSG_MAP(SetSoftMinFclk,                 PPSMC_MSG_SetSoftMinFclk,			1),
-	MSG_MAP(SetSoftMinVcn,                  PPSMC_MSG_SetSoftMinVcn,			1),
+	MSG_MAP(SetSoftMinVcn0,                 PPSMC_MSG_SetSoftMinVcn0,			1),
+	MSG_MAP(SetSoftMinVcn1,                 PPSMC_MSG_SetSoftMinVcn1,			1),
 	MSG_MAP(EnableGfxImu,                   PPSMC_MSG_EnableGfxImu,				1),
 	MSG_MAP(AllowGfxOff,                    PPSMC_MSG_AllowGfxOff,				1),
 	MSG_MAP(DisallowGfxOff,                 PPSMC_MSG_DisallowGfxOff,			1),
@@ -91,9 +95,12 @@ static struct cmn2asic_msg_mapping smu_v14_0_0_message_map[SMU_MSG_MAX_COUNT] = 
 	MSG_MAP(SetHardMinGfxClk,               PPSMC_MSG_SetHardMinGfxClk,			1),
 	MSG_MAP(SetSoftMaxSocclkByFreq,         PPSMC_MSG_SetSoftMaxSocclkByFreq,	1),
 	MSG_MAP(SetSoftMaxFclkByFreq,           PPSMC_MSG_SetSoftMaxFclkByFreq,		1),
-	MSG_MAP(SetSoftMaxVcn,                  PPSMC_MSG_SetSoftMaxVcn,			1),
-	MSG_MAP(PowerDownJpeg,                  PPSMC_MSG_PowerDownJpeg,			1),
-	MSG_MAP(PowerUpJpeg,                    PPSMC_MSG_PowerUpJpeg,				1),
+	MSG_MAP(SetSoftMaxVcn0,                 PPSMC_MSG_SetSoftMaxVcn0,			1),
+	MSG_MAP(SetSoftMaxVcn1,                 PPSMC_MSG_SetSoftMaxVcn1,			1),
+	MSG_MAP(PowerDownJpeg0,                 PPSMC_MSG_PowerDownJpeg0,			1),
+	MSG_MAP(PowerUpJpeg0,                   PPSMC_MSG_PowerUpJpeg0,				1),
+	MSG_MAP(PowerDownJpeg1,                 PPSMC_MSG_PowerDownJpeg1,			1),
+	MSG_MAP(PowerUpJpeg1,                   PPSMC_MSG_PowerUpJpeg1,				1),
 	MSG_MAP(SetHardMinFclkByFreq,           PPSMC_MSG_SetHardMinFclkByFreq,		1),
 	MSG_MAP(SetSoftMinSocclkByFreq,         PPSMC_MSG_SetSoftMinSocclkByFreq,	1),
 	MSG_MAP(PowerDownIspByTile,             PPSMC_MSG_PowerDownIspByTile,		1),
@@ -246,13 +253,25 @@ static int smu_v14_0_0_get_smu_metrics_data(struct smu_context *smu,
 		*value = 0;
 		break;
 	case METRICS_AVERAGE_UCLK:
-		*value = 0;
+		*value = metrics->MemclkFrequency;
 		break;
 	case METRICS_AVERAGE_FCLK:
 		*value = metrics->FclkFrequency;
 		break;
+	case METRICS_AVERAGE_VPECLK:
+		*value = metrics->VpeclkFrequency;
+		break;
+	case METRICS_AVERAGE_IPUCLK:
+		*value = metrics->IpuclkFrequency;
+		break;
+	case METRICS_AVERAGE_MPIPUCLK:
+		*value = metrics->MpipuclkFrequency;
+		break;
 	case METRICS_AVERAGE_GFXACTIVITY:
-		*value = metrics->GfxActivity / 100;
+		if ((smu->smc_fw_version > 0x5d4600))
+			*value = metrics->GfxActivity;
+		else
+			*value = metrics->GfxActivity / 100;
 		break;
 	case METRICS_AVERAGE_VCNACTIVITY:
 		*value = metrics->VcnActivity / 100;
@@ -270,8 +289,26 @@ static int smu_v14_0_0_get_smu_metrics_data(struct smu_context *smu,
 		*value = metrics->SocTemperature / 100 *
 		SMU_TEMPERATURE_UNITS_PER_CENTIGRADES;
 		break;
-	case METRICS_THROTTLER_STATUS:
-		*value = 0;
+	case METRICS_THROTTLER_RESIDENCY_PROCHOT:
+		*value = metrics->ThrottleResidency_PROCHOT;
+		break;
+	case METRICS_THROTTLER_RESIDENCY_SPL:
+		*value = metrics->ThrottleResidency_SPL;
+		break;
+	case METRICS_THROTTLER_RESIDENCY_FPPT:
+		*value = metrics->ThrottleResidency_FPPT;
+		break;
+	case METRICS_THROTTLER_RESIDENCY_SPPT:
+		*value = metrics->ThrottleResidency_SPPT;
+		break;
+	case METRICS_THROTTLER_RESIDENCY_THM_CORE:
+		*value = metrics->ThrottleResidency_THM_CORE;
+		break;
+	case METRICS_THROTTLER_RESIDENCY_THM_GFX:
+		*value = metrics->ThrottleResidency_THM_GFX;
+		break;
+	case METRICS_THROTTLER_RESIDENCY_THM_SOC:
+		*value = metrics->ThrottleResidency_THM_SOC;
 		break;
 	case METRICS_VOLTAGE_VDDGFX:
 		*value = 0;
@@ -498,6 +535,8 @@ static ssize_t smu_v14_0_0_get_gpu_metrics(struct smu_context *smu,
 		sizeof(uint16_t) * 16);
 	gpu_metrics->average_dram_reads = metrics.DRAMReads;
 	gpu_metrics->average_dram_writes = metrics.DRAMWrites;
+	gpu_metrics->average_ipu_reads = metrics.IpuReads;
+	gpu_metrics->average_ipu_writes = metrics.IpuWrites;
 
 	gpu_metrics->average_socket_power = metrics.SocketPower;
 	gpu_metrics->average_ipu_power = metrics.IpuPower;
@@ -505,6 +544,7 @@ static ssize_t smu_v14_0_0_get_gpu_metrics(struct smu_context *smu,
 	gpu_metrics->average_gfx_power = metrics.GfxPower;
 	gpu_metrics->average_dgpu_power = metrics.dGpuPower;
 	gpu_metrics->average_all_core_power = metrics.AllCorePower;
+	gpu_metrics->average_sys_power = metrics.Psys;
 	memcpy(&gpu_metrics->average_core_power[0],
 		&metrics.CorePower[0],
 		sizeof(uint16_t) * 16);
@@ -515,12 +555,22 @@ static ssize_t smu_v14_0_0_get_gpu_metrics(struct smu_context *smu,
 	gpu_metrics->average_fclk_frequency = metrics.FclkFrequency;
 	gpu_metrics->average_vclk_frequency = metrics.VclkFrequency;
 	gpu_metrics->average_ipuclk_frequency = metrics.IpuclkFrequency;
+	gpu_metrics->average_uclk_frequency = metrics.MemclkFrequency;
+	gpu_metrics->average_mpipu_frequency = metrics.MpipuclkFrequency;
 
 	memcpy(&gpu_metrics->current_coreclk[0],
 		&metrics.CoreFrequency[0],
 		sizeof(uint16_t) * 16);
 	gpu_metrics->current_core_maxfreq = metrics.InfrastructureCpuMaxFreq;
 	gpu_metrics->current_gfx_maxfreq = metrics.InfrastructureGfxMaxFreq;
+
+	gpu_metrics->throttle_residency_prochot = metrics.ThrottleResidency_PROCHOT;
+	gpu_metrics->throttle_residency_spl = metrics.ThrottleResidency_SPL;
+	gpu_metrics->throttle_residency_fppt = metrics.ThrottleResidency_FPPT;
+	gpu_metrics->throttle_residency_sppt = metrics.ThrottleResidency_SPPT;
+	gpu_metrics->throttle_residency_thm_core = metrics.ThrottleResidency_THM_CORE;
+	gpu_metrics->throttle_residency_thm_gfx = metrics.ThrottleResidency_THM_GFX;
+	gpu_metrics->throttle_residency_thm_soc = metrics.ThrottleResidency_THM_SOC;
 
 	gpu_metrics->time_filter_alphavalue = metrics.FilterAlphaValue;
 	gpu_metrics->system_clock_counter = ktime_get_boottime_ns();
@@ -1045,6 +1095,25 @@ static int smu_v14_0_0_set_umsch_mm_enable(struct smu_context *smu,
 					       0, NULL);
 }
 
+static int smu_14_0_0_get_dpm_table(struct smu_context *smu, struct dpm_clocks *clock_table)
+{
+	DpmClocks_t *clk_table = smu->smu_table.clocks_table;
+	uint8_t idx;
+
+	/* Only the Clock information of SOC and VPE is copied to provide VPE DPM settings for use. */
+	for (idx = 0; idx < NUM_SOCCLK_DPM_LEVELS; idx++) {
+		clock_table->SocClocks[idx].Freq = (idx < clk_table->NumSocClkLevelsEnabled) ? clk_table->SocClocks[idx]:0;
+		clock_table->SocClocks[idx].Vol = 0;
+	}
+
+	for (idx = 0; idx < NUM_VPE_DPM_LEVELS; idx++) {
+		clock_table->VPEClocks[idx].Freq = (idx < clk_table->VpeClkLevelsEnabled) ? clk_table->VPEClocks[idx]:0;
+		clock_table->VPEClocks[idx].Vol = 0;
+	}
+
+	return 0;
+}
+
 static const struct pptable_funcs smu_v14_0_0_ppt_funcs = {
 	.check_fw_status = smu_v14_0_check_fw_status,
 	.check_fw_version = smu_v14_0_check_fw_version,
@@ -1075,6 +1144,7 @@ static const struct pptable_funcs smu_v14_0_0_ppt_funcs = {
 	.set_gfx_power_up_by_imu = smu_v14_0_set_gfx_power_up_by_imu,
 	.dpm_set_vpe_enable = smu_v14_0_0_set_vpe_enable,
 	.dpm_set_umsch_mm_enable = smu_v14_0_0_set_umsch_mm_enable,
+	.get_dpm_clock_table = smu_14_0_0_get_dpm_table,
 };
 
 static void smu_v14_0_0_set_smu_mailbox_registers(struct smu_context *smu)

@@ -718,7 +718,7 @@ static const struct net_device_ops eth_netdev_ops = {
 	.ndo_validate_addr	= eth_validate_addr,
 };
 
-static struct device_type gadget_type = {
+static const struct device_type gadget_type = {
 	.name	= "gadget",
 };
 
@@ -1162,6 +1162,8 @@ struct net_device *gether_connect(struct gether *link)
 		netif_carrier_on(dev->net);
 		if (netif_running(dev->net))
 			eth_start(dev, GFP_ATOMIC);
+
+		netif_device_attach(dev->net);
 
 	/* on error, disable any endpoints  */
 	} else {

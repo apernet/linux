@@ -30,7 +30,13 @@ struct work_struct;
 
 bool bch2_inconsistent_error(struct bch_fs *);
 
-void bch2_topology_error(struct bch_fs *);
+int bch2_topology_error(struct bch_fs *);
+
+#define bch2_fs_topology_error(c, ...)					\
+({									\
+	bch_err(c, "btree topology error: " __VA_ARGS__);		\
+	bch2_topology_error(c);						\
+})
 
 #define bch2_fs_inconsistent(c, ...)					\
 ({									\
@@ -157,6 +163,7 @@ void bch2_flush_fsck_errs(struct bch_fs *);
 #define fsck_err_on(cond, c, _err_type, ...)				\
 	__fsck_err_on(cond, c, FSCK_CAN_FIX|FSCK_CAN_IGNORE, _err_type, __VA_ARGS__)
 
+__printf(4, 0)
 static inline void bch2_bkey_fsck_err(struct bch_fs *c,
 				     struct printbuf *err_msg,
 				     enum bch_sb_error_id err_type,
@@ -167,7 +174,6 @@ static inline void bch2_bkey_fsck_err(struct bch_fs *c,
 	va_start(args, fmt);
 	prt_vprintf(err_msg, fmt, args);
 	va_end(args);
-
 }
 
 #define bkey_fsck_err(c, _err_msg, _err_type, ...)			\
@@ -191,9 +197,9 @@ do {									\
 
 void bch2_fatal_error(struct bch_fs *);
 
-#define bch2_fs_fatal_error(c, ...)					\
+#define bch2_fs_fatal_error(c, _msg, ...)				\
 do {									\
-	bch_err(c, __VA_ARGS__);					\
+	bch_err(c, "%s(): fatal error " _msg, __func__, ##__VA_ARGS__);	\
 	bch2_fatal_error(c);						\
 } while (0)
 
